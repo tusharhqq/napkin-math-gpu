@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast
 
-
 SCHEMA_VERSION = 2
 
 MetricUnit = Literal["us", "GB/s", "TFLOP/s"]

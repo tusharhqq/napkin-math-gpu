@@ -22,7 +22,6 @@ import modal
 
 from napkin_profile import SCHEMA_VERSION, DeviceInfo, Metric, Metrics, Profile, make_metric
 
-
 TORCH_VERSION = "2.8.0"
 NUMPY_VERSION = "2.2.6"
 
@@ -60,7 +59,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
     import statistics
     import subprocess
     import time
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     import numpy as np
     import torch
@@ -143,9 +142,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
     cpu_memory_mib = 64 if quick else 512
     cpu_memory_elements = cpu_memory_mib * 1024 * 1024 // 4
     cpu_memory_src = torch.arange(cpu_memory_elements, dtype=torch.float32, pin_memory=True)
-    cpu_memory_dst = torch.empty(
-        cpu_memory_elements, dtype=torch.float32, pin_memory=True
-    )
+    cpu_memory_dst = torch.empty(cpu_memory_elements, dtype=torch.float32, pin_memory=True)
     cpu_memory_samples = wall_samples(
         lambda: cpu_memory_dst.copy_(cpu_memory_src),
         warmups=5,
@@ -323,7 +320,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
         b = torch.randn((gemm_n, gemm_n), dtype=dtype, device=device)
         out = torch.empty((gemm_n, gemm_n), dtype=dtype, device=device)
         samples = cuda_samples(
-            lambda: torch.mm(a, b, out=out),
+            lambda a=a, b=b, out=out: torch.mm(a, b, out=out),
             warmups=5 if quick else 10,
             iterations=5 if quick else 20,
             rounds=rounds,
@@ -372,7 +369,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
     ).stdout.strip()
     device_rows: list[DeviceInfo] = []
     for row in query.splitlines():
-        smi_name, uuid, memory_mib, pci_bus_id, driver, power_limit_w = [
+        smi_name, uuid, memory_mib, pci_bus_id, _driver, power_limit_w = [
             item.strip() for item in row.split(",")
         ]
         device_index = len(device_rows)
@@ -399,9 +396,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
     topology_lines = [line.split() for line in p2p_topology.splitlines() if line.strip()]
     header = next(tokens for tokens in topology_lines if tokens[:2] == ["GPU0", "GPU1"])
     gpu1_column = header.index("GPU1")
-    gpu0_row = next(
-        tokens for tokens in topology_lines if tokens[0] == "GPU0" and tokens != header
-    )
+    gpu0_row = next(tokens for tokens in topology_lines if tokens[0] == "GPU0" and tokens != header)
     p2p_status = gpu0_row[gpu1_column + 1]
     if p2p_status != "OK":
         raise RuntimeError(f"nvidia-smi reports GPU 0 → GPU 1 P2P status {p2p_status!r}")
@@ -436,7 +431,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "mode": "quick" if quick else "full",
         "host": {
             "cpu_model": cpu_model,

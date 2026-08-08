@@ -64,8 +64,10 @@ def render(profile: Profile) -> str:
     lines = [
         f"# {profile['device']['name']} system-path benchmark",
         "",
-        f"Captured `{profile['captured_at']}` using the `{profile['methodology']['gpu_request']}` "
-        f"Modal request in `{profile['mode']}` mode.",
+        (
+            f"Captured `{profile['captured_at']}` using the `{profile['methodology']['gpu_request']}` "
+            + f"Modal request in `{profile['mode']}` mode."
+        ),
         "",
         "| Operation | Measured | Median benchmark time | Small job | Large job |",
         "| --- | ---: | ---: | ---: | ---: |",
@@ -75,15 +77,17 @@ def render(profile: Profile) -> str:
         small_job, large_job = _work_examples(metric)
         lines.append(
             f"| {label} | {_value(metric)} | {metric['median_ms']:.4f} ms | "
-            f"{small_job} | {large_job} |"
+            + f"{small_job} | {large_job} |"
         )
     lines.extend(
         [
             "",
             "## Roofline ridge points",
             "",
-            "The ridge point is `compute ceiling ÷ HBM bandwidth`. A workload below it is "
-            "memory-bound in this model; above it, compute-bound.",
+            (
+                "The ridge point is `compute ceiling ÷ HBM bandwidth`. A workload below it is "
+                + "memory-bound in this model; above it, compute-bound."
+            ),
             "",
             "| Precision | Measured compute ceiling | Ridge point |",
             "| --- | ---: | ---: |",
@@ -93,22 +97,31 @@ def render(profile: Profile) -> str:
         ceiling = roofline_ceiling(profile, dtype)
         lines.append(
             f"| {dtype} | {ceiling.compute_tflops:,.0f} TFLOP/s | "
-            f"{ceiling.ridge_point_flops_per_byte:,.1f} FLOP/byte |"
+            + f"{ceiling.ridge_point_flops_per_byte:,.1f} FLOP/byte |"
         )
     lines.extend(
         [
             "",
             "## Environment",
             "",
-            f"- CPU: `{profile['host']['cpu_model']}`; "
-            f"{profile['host']['torch_threads']} PyTorch copy threads",
-            f"- GPU: `{profile['device']['name']}`; {profile['device']['memory_mib']} MiB; "
-            f"compute capability {profile['device']['compute_capability']}; "
-            f"{1 + len(profile['peer_devices'])} devices",
-            f"- GPU interconnect: GPU 0 ↔ GPU 1 is "
-            f"`{profile['interconnect']['topology_label']}`; direct peer access passed",
-            f"- PyTorch: `{profile['software']['torch']}`; CUDA runtime "
-            f"`{profile['software']['cuda_runtime']}`; driver `{profile['software']['nvidia_driver']}`",
+            (
+                f"- CPU: `{profile['host']['cpu_model']}`; "
+                + f"{profile['host']['torch_threads']} PyTorch copy threads"
+            ),
+            (
+                f"- GPU: `{profile['device']['name']}`; {profile['device']['memory_mib']} MiB; "
+                + f"compute capability {profile['device']['compute_capability']}; "
+                + f"{1 + len(profile['peer_devices'])} devices"
+            ),
+            (
+                "- GPU interconnect: GPU 0 ↔ GPU 1 is "
+                + f"`{profile['interconnect']['topology_label']}`; direct peer access passed"
+            ),
+            (
+                f"- PyTorch: `{profile['software']['torch']}`; CUDA runtime "
+                + f"`{profile['software']['cuda_runtime']}`; "
+                + f"driver `{profile['software']['nvidia_driver']}`"
+            ),
             f"- Method: {profile['methodology']['timer']}; {profile['methodology']['statistic']}",
             "- Correctness: all benchmark checks passed",
             "",

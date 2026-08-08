@@ -11,7 +11,6 @@ from typing import cast
 
 from napkin_profile import GemmDtype, Profile, get_metric, load_profile, roofline_ceiling
 
-
 REPOSITORY_PROFILE = Path(__file__).parent / "results" / "h100-sxm.json"
 INSTALLED_PROFILE = Path(sys.prefix) / "share" / "gpu-napkin-math" / "h100-sxm.json"
 DEFAULT_PROFILE = REPOSITORY_PROFILE if REPOSITORY_PROFILE.exists() else INSTALLED_PROFILE

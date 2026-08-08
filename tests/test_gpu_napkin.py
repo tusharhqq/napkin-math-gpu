@@ -14,7 +14,6 @@ from napkin_profile import (
 )
 from render_results import render
 
-
 PROFILE: Profile = {
     "schema_version": 2,
     "captured_at": "2026-08-08T00:00:00+00:00",
@@ -25,9 +24,7 @@ PROFILE: Profile = {
         "torch_threads": 8,
     },
     "device": {"name": "Test GPU", "memory_mib": 80, "compute_capability": "9.0"},
-    "peer_devices": [
-        {"name": "Test GPU", "memory_mib": 80, "compute_capability": "9.0"}
-    ],
+    "peer_devices": [{"name": "Test GPU", "memory_mib": 80, "compute_capability": "9.0"}],
     "interconnect": {
         "source_device": 0,
         "destination_device": 1,

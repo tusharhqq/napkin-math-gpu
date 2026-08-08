@@ -6,3 +6,11 @@ __pycache__/
 build/
 dist/
 reference/
+.astro/
+.wrangler/
+node_modules/
+.env
+.env.*
+!.env.example
+design-reference/
+qa-artifacts/
