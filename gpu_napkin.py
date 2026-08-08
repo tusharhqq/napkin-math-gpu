@@ -29,10 +29,10 @@ class Estimate:
 
 
 def _metric(profile: dict[str, Any], name: str) -> dict[str, Any]:
-    try:
-        return profile["metrics"][name]
-    except KeyError as exc:
-        raise ValueError(f"profile does not contain metric {name!r}") from exc
+    metrics = profile["metrics"]
+    if name not in metrics:
+        raise ValueError(f"profile does not contain metric {name!r}")
+    return metrics[name]
 
 
 def estimate(
@@ -45,13 +45,15 @@ def estimate(
     device_to_host_bytes: float = 0.0,
     launches: int = 1,
 ) -> Estimate:
-    """Apply a deliberately small roofline model to one workload.
+    """Roofline lower bound: max(compute, memory), plus transfers and launches."""
 
-    Device compute and memory can overlap, so the slower of the two is used.
-    Transfers and launch overhead are then added conservatively.
-    """
-
-    if min(flops, device_bytes, host_to_device_bytes, device_to_host_bytes, launches) < 0:
+    if (
+        flops < 0
+        or device_bytes < 0
+        or host_to_device_bytes < 0
+        or device_to_host_bytes < 0
+        or launches < 0
+    ):
         raise ValueError("work quantities must be non-negative")
 
     compute_metric = _metric(profile, f"gemm_{dtype}")
@@ -80,7 +82,10 @@ def estimate(
     else:
         bottleneck = "balanced"
 
-    intensity = math.inf if device_bytes == 0 and flops else flops / device_bytes if device_bytes else 0
+    if device_bytes == 0:
+        intensity = math.inf if flops else 0.0
+    else:
+        intensity = flops / device_bytes
     return Estimate(
         compute_ms=compute_ms,
         memory_ms=memory_ms,
@@ -118,8 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.launches < 0:
         raise SystemExit("--launches must be non-negative")
-    with args.profile.open() as handle:
-        profile = json.load(handle)
+    profile = json.loads(args.profile.read_text())
     result = estimate(
         profile,
         flops=args.flops,
@@ -131,7 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     intensity = (
-        "infinite" if math.isinf(result.arithmetic_intensity) else f"{result.arithmetic_intensity:.2f}"
+        "infinite"
+        if math.isinf(result.arithmetic_intensity)
+        else f"{result.arithmetic_intensity:.2f}"
     )
     print(f"GPU:              {profile['device']['name']}")
     print(f"Arithmetic intensity: {intensity} FLOP/byte")
