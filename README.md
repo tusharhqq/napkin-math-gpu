@@ -60,6 +60,37 @@ For HBM copy, bytes moved includes both the read and the write. GEMM counts
 `2 × M × N × K` FLOPs. The small- and large-job times use the rounded
 napkin numbers, so they are for mental math rather than precision prediction.
 
+## Host, storage, and network numbers worth memorizing
+
+A GPU rarely works alone. These upstream Napkin Math heuristics help estimate
+whether CPU staging, storage, or the network will starve it. They are copied
+from the bundled reference snapshot, not measured by this project's Modal GPU
+benchmark.
+
+| Surrounding operation | Napkin number | Time for 1 GiB | Why a GPU practitioner cares | Reference |
+| --- | ---: | ---: | --- | --- |
+| Sequential host memory, one thread | **20 GiB/s** | **50 ms** | A single preprocessing or copy thread can bottleneck input staging | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Sequential host memory, threaded | **200 GiB/s** | **5 ms** | Aggregate CPU-memory ceiling for parallel loaders and pinned-buffer preparation | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Context switch | **10 μs** | — | CPU scheduling can cost as much as multiple tiny GPU kernels | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Sequential local SSD read | **8 GiB/s** | **100 ms** | Dataset and checkpoint loading before host-to-device transfer | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Sequential local SSD write, without `fsync` | **3 GiB/s** | **300 ms** | Checkpoint and activation spill throughput | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Same-zone network | **10 GiB/s** | **100 ms** | Remote datasets and host-to-host movement near a GPU worker | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Premium same-zone/VPC network | **25 GiB/s** | **40 ms** | Best-case cloud data movement before collective-library overheads | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Same-region network | **2 GiB/s** | **500 ms** | A misplaced dataset service can dominate a short GPU step | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+| Blob storage GET, one connection | **100 MiB/s** | **10 s** | One serial object stream will not keep a modern GPU fed | [Napkin Math numbers](reference/napkin-math/README.md#numbers) |
+
+These rows intentionally retain the upstream binary units; the measured GPU
+tables use decimal `GB/s`. Napkin Math describes the numbers as rounded for
+memorization and notes that some latency and throughput cells deliberately do
+not line up exactly. Hardware, cloud topology, concurrency, and storage layout
+can move them substantially.
+
+For scale, loading 1 GiB from local SSD is roughly **100 ms**
+([Napkin Math numbers](reference/napkin-math/README.md#numbers)), uploading it
+to the measured H100 is roughly **20 ms**, and reading plus writing the same
+amount in HBM is below **1 ms**. Optimizing the GPU kernel cannot recover time
+spent waiting on a serial input path.
+
 ## Worked examples
 
 These use the H100 table. Try each question before reading its calculation.
