@@ -15,7 +15,7 @@ from typing import NamedTuple, cast
 
 import modal
 
-from napkin_profile import SCHEMA_VERSION, Metric, Metrics, Profile, make_metric
+from napkin_profile import SCHEMA_VERSION, DeviceInfo, Metric, Metrics, Profile, make_metric
 
 
 TORCH_VERSION = "2.8.0"
@@ -28,11 +28,12 @@ class GpuTarget(NamedTuple):
     default_output: str
 
 
-# One row per supported GPU. Modal needs a decorate-time gpu= string, so wrappers
-# are generated from this table (H100! blocks a silent H200 upgrade).
+# One row per supported GPU. Canonical runs use two same-host GPUs so the profile
+# owns the complete CPU RAM → PCIe → HBM → compute → interconnect path.
+# Modal needs a decorate-time gpu= string, so wrappers are generated here.
 GPU_TARGETS: tuple[GpuTarget, ...] = (
-    GpuTarget("h100", "H100!", "results/h100-sxm.json"),
-    GpuTarget("a100", "A100-80GB", "results/a100-80gb-pcie.json"),
+    GpuTarget("h100", "H100!:2", "results/h100-sxm.json"),
+    GpuTarget("a100", "A100-80GB:2", "results/a100-80gb-sxm4.json"),
 )
 GPU_BY_KEY = {target.key: target for target in GPU_TARGETS}
 
@@ -48,9 +49,12 @@ app = modal.App("gpu-napkin-math", image=image)
 
 
 def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
+    import os
     import platform
+    import re
     import statistics
     import subprocess
+    import time
     from datetime import datetime, timezone
 
     import numpy as np
@@ -61,24 +65,48 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
 
     torch.manual_seed(20260808)
     torch.cuda.manual_seed_all(20260808)
-    device = torch.device("cuda:0")
-    props = torch.cuda.get_device_properties(device)
+    if torch.cuda.device_count() != 2:
+        raise RuntimeError(f"expected exactly 2 GPUs, found {torch.cuda.device_count()}")
 
-    def cuda_samples(fn, *, warmups: int, iterations: int, rounds: int) -> list[float]:
+    device = torch.device("cuda:0")
+    peer_device = torch.device("cuda:1")
+
+    def cuda_samples(
+        fn,
+        *,
+        warmups: int,
+        iterations: int,
+        rounds: int,
+        timing_device: torch.device = device,
+    ) -> list[float]:
+        with torch.cuda.device(timing_device):
+            for _ in range(warmups):
+                fn()
+            torch.cuda.synchronize(timing_device)
+
+            samples = []
+            for _ in range(rounds):
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
+                for _ in range(iterations):
+                    fn()
+                end.record()
+                end.synchronize()
+                samples.append(start.elapsed_time(end) / iterations)
+            return samples
+
+    def wall_samples(fn, *, warmups: int, iterations: int, rounds: int) -> list[float]:
         for _ in range(warmups):
             fn()
-        torch.cuda.synchronize()
 
         samples = []
         for _ in range(rounds):
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
+            started_ns = time.perf_counter_ns()
             for _ in range(iterations):
                 fn()
-            end.record()
-            end.synchronize()
-            samples.append(start.elapsed_time(end) / iterations)
+            elapsed_ms = (time.perf_counter_ns() - started_ns) / 1e6
+            samples.append(elapsed_ms / iterations)
         return samples
 
     rounds = 3 if quick else 7
@@ -103,6 +131,34 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
 
     def probe_indices(n: int, *, on_device: bool = False) -> torch.Tensor:
         return torch.tensor([0, n // 2, n - 1], device=device if on_device else "cpu")
+
+    # Pinned CPU RAM copy models preparation/staging before the PCIe transfer.
+    cpu_threads = min(8, os.cpu_count() or 1)
+    torch.set_num_threads(cpu_threads)
+    cpu_memory_mib = 64 if quick else 512
+    cpu_memory_elements = cpu_memory_mib * 1024 * 1024 // 4
+    cpu_memory_src = torch.arange(cpu_memory_elements, dtype=torch.float32, pin_memory=True)
+    cpu_memory_dst = torch.empty(
+        cpu_memory_elements, dtype=torch.float32, pin_memory=True
+    )
+    cpu_memory_samples = wall_samples(
+        lambda: cpu_memory_dst.copy_(cpu_memory_src),
+        warmups=5,
+        iterations=5 if quick else 20,
+        rounds=rounds,
+    )
+    record_bandwidth(
+        "cpu_memory_copy",
+        samples_ms=cpu_memory_samples,
+        bytes_counted=cpu_memory_src.numel() * cpu_memory_src.element_size() * 2,
+        allocation_mib=cpu_memory_mib,
+        threads=cpu_threads,
+        convention="pinned source read plus pinned destination write",
+    )
+    cpu_memory_indices = probe_indices(cpu_memory_elements)
+    checks["cpu_memory_copy"] = torch.equal(
+        cpu_memory_src[cpu_memory_indices], cpu_memory_dst[cpu_memory_indices]
+    )
 
     # One-element in-place add: end-to-end tiny-kernel latency.
     tiny = torch.ones(1, device=device)
@@ -190,6 +246,58 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
         host_src[transfer_indices], host_dst[transfer_indices]
     )
 
+    # Direct peer copies cover the GPU interconnect in both directions. The
+    # published metric is the slower direction, which is conservative for
+    # napkin estimates; both directional values remain in the raw profile.
+    peer_access = torch.cuda.can_device_access_peer(0, 1)
+    if not peer_access:
+        raise RuntimeError("GPU 0 and GPU 1 do not support direct peer access")
+    peer_mib = 64 if quick else 512
+    peer_elements = peer_mib * 1024 * 1024 // 4
+    peer_bytes = peer_elements * 4
+    peer_src_0 = torch.arange(peer_elements, dtype=torch.float32, device=device)
+    peer_dst_1 = torch.empty(peer_elements, dtype=torch.float32, device=peer_device)
+    peer_src_1 = torch.arange(peer_elements, dtype=torch.float32, device=peer_device)
+    peer_dst_0 = torch.empty(peer_elements, dtype=torch.float32, device=device)
+    peer_iterations = 5 if quick else 20
+    peer_01_samples = cuda_samples(
+        lambda: peer_dst_1.copy_(peer_src_0, non_blocking=True),
+        warmups=5,
+        iterations=peer_iterations,
+        rounds=rounds,
+        timing_device=peer_device,
+    )
+    peer_10_samples = cuda_samples(
+        lambda: peer_dst_0.copy_(peer_src_1, non_blocking=True),
+        warmups=5,
+        iterations=peer_iterations,
+        rounds=rounds,
+        timing_device=device,
+    )
+    peer_01_gbps = peer_bytes / (statistics.median(peer_01_samples) / 1e3) / 1e9
+    peer_10_gbps = peer_bytes / (statistics.median(peer_10_samples) / 1e3) / 1e9
+    slower_samples = peer_01_samples if peer_01_gbps <= peer_10_gbps else peer_10_samples
+    metrics["gpu_to_gpu"] = make_metric(
+        slower_samples,
+        value=min(peer_01_gbps, peer_10_gbps),
+        unit="GB/s",
+        bytes_counted=peer_bytes,
+        allocation_mib=peer_mib,
+        convention="one-way direct peer copy; slower of the two directions",
+        source_device=0,
+        destination_device=1,
+        forward_gbps=peer_01_gbps,
+        reverse_gbps=peer_10_gbps,
+    )
+    peer_indices_0 = probe_indices(peer_elements, on_device=True)
+    peer_indices_1 = torch.tensor([0, peer_elements // 2, peer_elements - 1], device=peer_device)
+    checks["gpu_to_gpu_0_to_1"] = torch.equal(
+        peer_src_0[peer_indices_0].cpu(), peer_dst_1[peer_indices_1].cpu()
+    )
+    checks["gpu_to_gpu_1_to_0"] = torch.equal(
+        peer_src_1[peer_indices_1].cpu(), peer_dst_0[peer_indices_0].cpu()
+    )
+
     # GEMM: C = A @ B, 2*M*N*K FLOPs.
     gemm_n = 4096 if quick else 8192
     gemm_specs = (
@@ -257,9 +365,65 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    smi_name, uuid, memory_mib, pci_bus_id, driver, power_limit_w = [
-        item.strip() for item in query.split(",")
+    device_rows: list[DeviceInfo] = []
+    for row in query.splitlines():
+        smi_name, uuid, memory_mib, pci_bus_id, driver, power_limit_w = [
+            item.strip() for item in row.split(",")
+        ]
+        device_index = len(device_rows)
+        device_props = torch.cuda.get_device_properties(device_index)
+        device_rows.append(
+            {
+                "name": smi_name,
+                "uuid": uuid,
+                "memory_mib": int(memory_mib),
+                "pci_bus_id": pci_bus_id,
+                "power_limit_w": float(power_limit_w),
+                "compute_capability": f"{device_props.major}.{device_props.minor}",
+                "multiprocessor_count": device_props.multi_processor_count,
+            }
+        )
+
+    p2p_topology = subprocess.run(
+        ["nvidia-smi", "topo", "-p2p", "r"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    p2p_topology = re.sub(r"\x1b\[[0-9;]*m", "", p2p_topology)
+    topology_lines = [line.split() for line in p2p_topology.splitlines() if line.strip()]
+    header = next(tokens for tokens in topology_lines if tokens[:2] == ["GPU0", "GPU1"])
+    gpu1_column = header.index("GPU1")
+    gpu0_row = next(
+        tokens for tokens in topology_lines if tokens[0] == "GPU0" and tokens != header
+    )
+    p2p_status = gpu0_row[gpu1_column + 1]
+    if p2p_status != "OK":
+        raise RuntimeError(f"nvidia-smi reports GPU 0 → GPU 1 P2P status {p2p_status!r}")
+
+    nvlink_status = subprocess.run(
+        ["nvidia-smi", "nvlink", "--status"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    gpu0_nvlink_block = nvlink_status.split("GPU 1:", 1)[0]
+    nvlink_speeds = [
+        float(line.split(":", 1)[1].split()[0])
+        for line in gpu0_nvlink_block.splitlines()
+        if line.strip().startswith("Link ")
     ]
+    if not nvlink_speeds or len(set(nvlink_speeds)) != 1:
+        raise RuntimeError("could not derive a uniform active NVLink topology")
+    topology_label = f"{len(nvlink_speeds)} × NVLink ({nvlink_speeds[0]:g} GB/s/link)"
+
+    cpu_model = "Modal CPU allocation (model not exposed)"
+    for line in Path("/proc/cpuinfo").read_text().splitlines():
+        if line.startswith("model name"):
+            exposed_model = line.split(":", 1)[1].strip()
+            if exposed_model.lower() != "unknown":
+                cpu_model = exposed_model
+            break
 
     if not all(checks.values()):
         failures = [name for name, passed in checks.items() if not passed]
@@ -269,24 +433,30 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
         "schema_version": SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "mode": "quick" if quick else "full",
-        "device": {
-            "name": smi_name,
-            "uuid": uuid,
-            "memory_mib": int(memory_mib),
-            "pci_bus_id": pci_bus_id,
-            "power_limit_w": float(power_limit_w),
-            "compute_capability": f"{props.major}.{props.minor}",
-            "multiprocessor_count": props.multi_processor_count,
+        "host": {
+            "cpu_model": cpu_model,
+            "logical_cpu_count": os.cpu_count() or 1,
+            "torch_threads": cpu_threads,
+        },
+        "device": device_rows[0],
+        "peer_devices": device_rows[1:],
+        "interconnect": {
+            "source_device": 0,
+            "destination_device": 1,
+            "topology_label": topology_label,
+            "peer_access": peer_access,
+            "nvidia_smi_p2p": p2p_topology,
+            "nvidia_smi_nvlink": nvlink_status,
         },
         "software": {
             "python": platform.python_version(),
             "torch": str(torch.__version__),
             "cuda_runtime": str(torch.version.cuda),
-            "nvidia_driver": driver,
+            "nvidia_driver": query.splitlines()[0].split(",")[4].strip(),
             "cudnn": str(torch.backends.cudnn.version()),
         },
         "methodology": {
-            "timer": "CUDA events on the default stream",
+            "timer": "perf_counter for CPU RAM; CUDA events for GPU operations",
             "statistic": f"median of {rounds} rounds after per-operation warmup",
             "allocation_units": "MiB (2^20 bytes)",
             "throughput_units": "GB/s (10^9 bytes/s) and TFLOP/s (10^12 FLOP/s)",
@@ -298,22 +468,34 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
     }
 
 
-def _make_remote_benchmark(target: GpuTarget):
-    """Bind a Modal Function to a fixed decorate-time GPU request string."""
-
-    @app.function(
-        gpu=target.modal_request,
-        timeout=20 * 60,
-        scaledown_window=60,
-        name=f"benchmark_{target.key}",
-    )
-    def benchmark(quick: bool = False) -> Profile:
-        return _benchmark(gpu_request=target.modal_request, quick=quick)
-
-    return benchmark
+@app.function(
+    gpu=GPU_BY_KEY["h100"].modal_request,
+    cpu=8.0,
+    memory=8192,
+    timeout=20 * 60,
+    scaledown_window=60,
+    name="benchmark_h100",
+)
+def benchmark_h100(quick: bool = False) -> Profile:
+    return _benchmark(gpu_request=GPU_BY_KEY["h100"].modal_request, quick=quick)
 
 
-REMOTE_BENCHMARKS = {target.key: _make_remote_benchmark(target) for target in GPU_TARGETS}
+@app.function(
+    gpu=GPU_BY_KEY["a100"].modal_request,
+    cpu=8.0,
+    memory=8192,
+    timeout=20 * 60,
+    scaledown_window=60,
+    name="benchmark_a100",
+)
+def benchmark_a100(quick: bool = False) -> Profile:
+    return _benchmark(gpu_request=GPU_BY_KEY["a100"].modal_request, quick=quick)
+
+
+REMOTE_BENCHMARKS = {
+    "h100": benchmark_h100,
+    "a100": benchmark_a100,
+}
 
 
 @app.local_entrypoint()

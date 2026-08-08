@@ -62,7 +62,7 @@ def _work_examples(metric: Metric) -> tuple[str, str]:
 
 def render(profile: Profile) -> str:
     lines = [
-        f"# {profile['device']['name']} benchmark",
+        f"# {profile['device']['name']} system-path benchmark",
         "",
         f"Captured `{profile['captured_at']}` using the `{profile['methodology']['gpu_request']}` "
         f"Modal request in `{profile['mode']}` mode.",
@@ -100,8 +100,13 @@ def render(profile: Profile) -> str:
             "",
             "## Environment",
             "",
+            f"- CPU: `{profile['host']['cpu_model']}`; "
+            f"{profile['host']['torch_threads']} PyTorch copy threads",
             f"- GPU: `{profile['device']['name']}`; {profile['device']['memory_mib']} MiB; "
-            f"compute capability {profile['device']['compute_capability']}",
+            f"compute capability {profile['device']['compute_capability']}; "
+            f"{1 + len(profile['peer_devices'])} devices",
+            f"- GPU interconnect: GPU 0 ↔ GPU 1 is "
+            f"`{profile['interconnect']['topology_label']}`; direct peer access passed",
             f"- PyTorch: `{profile['software']['torch']}`; CUDA runtime "
             f"`{profile['software']['cuda_runtime']}`; driver `{profile['software']['nvidia_driver']}`",
             f"- Method: {profile['methodology']['timer']}; {profile['methodology']['statistic']}",

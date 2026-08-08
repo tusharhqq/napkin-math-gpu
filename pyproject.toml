@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gpu-napkin-math"
 version = "0.1.0"
-description = "Measured GPU numbers and a tiny roofline calculator"
+description = "Memorable GPU numbers and a rough-estimate calculator"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -23,7 +23,7 @@ gpu-napkin = "gpu_napkin:main"
 py-modules = ["gpu_napkin", "napkin_profile", "render_results"]
 
 [tool.setuptools.data-files]
-"share/gpu-napkin-math" = ["results/h100-sxm.json", "results/a100-80gb-pcie.json"]
+"share/gpu-napkin-math" = ["results/h100-sxm.json", "results/a100-80gb-sxm4.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
