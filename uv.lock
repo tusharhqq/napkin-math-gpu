@@ -359,9 +359,6 @@ wheels = [
 name = "gpu-napkin-math"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
-    { name = "ty" },
-]
 
 [package.optional-dependencies]
 benchmark = [
@@ -380,7 +377,6 @@ dev = [
 requires-dist = [
     { name = "modal", marker = "extra == 'benchmark'", specifier = "==1.5.3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0,<9" },
-    { name = "ty", specifier = ">=0.0.66" },
 ]
 provides-extras = ["benchmark", "test"]
 

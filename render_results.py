@@ -3,25 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
-from typing import Any
 
-
-ROWS = (
-    ("Tiny elementwise kernel", "tiny_kernel"),
-    ("Pinned host → device", "host_to_device"),
-    ("Device → pinned host", "device_to_host"),
-    ("HBM copy (read + write)", "hbm_copy"),
-    ("Elementwise fp32 add (2 reads + write)", "elementwise_add"),
-    ("fp16 matrix multiply", "gemm_fp16"),
-    ("bf16 matrix multiply", "gemm_bf16"),
-    ("tf32 matrix multiply", "gemm_tf32"),
-    ("fp32 matrix multiply (TF32 disabled)", "gemm_fp32"),
+from napkin_profile import (
+    GEMM_DTYPES,
+    METRIC_ROWS,
+    Metric,
+    Profile,
+    get_metric,
+    load_profile,
+    roofline_ceiling,
 )
 
 
-def _value(metric: dict[str, Any]) -> str:
+def _value(metric: Metric) -> str:
     value = metric["value"]
     unit = metric["unit"]
     if unit == "us":
@@ -43,7 +38,7 @@ def _duration(seconds: float) -> str:
     return f"{seconds:.3g} s"
 
 
-def _work_examples(metric: dict[str, Any]) -> tuple[str, str]:
+def _work_examples(metric: Metric) -> tuple[str, str]:
     value = metric["value"]
     unit = metric["unit"]
     if unit == "us":
@@ -65,7 +60,7 @@ def _work_examples(metric: dict[str, Any]) -> tuple[str, str]:
     return ("—", "—")
 
 
-def render(profile: dict[str, Any]) -> str:
+def render(profile: Profile) -> str:
     lines = [
         f"# {profile['device']['name']} benchmark",
         "",
@@ -75,12 +70,30 @@ def render(profile: dict[str, Any]) -> str:
         "| Operation | Measured | Median benchmark time | Small job | Large job |",
         "| --- | ---: | ---: | ---: | ---: |",
     ]
-    for label, key in ROWS:
-        metric = profile["metrics"][key]
+    for label, key in METRIC_ROWS:
+        metric = get_metric(profile, key)
         small_job, large_job = _work_examples(metric)
         lines.append(
             f"| {label} | {_value(metric)} | {metric['median_ms']:.4f} ms | "
             f"{small_job} | {large_job} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Roofline ridge points",
+            "",
+            "The ridge point is `compute ceiling ÷ HBM bandwidth`. A workload below it is "
+            "memory-bound in this model; above it, compute-bound.",
+            "",
+            "| Precision | Measured compute ceiling | Ridge point |",
+            "| --- | ---: | ---: |",
+        ]
+    )
+    for dtype in GEMM_DTYPES:
+        ceiling = roofline_ceiling(profile, dtype)
+        lines.append(
+            f"| {dtype} | {ceiling.compute_tflops:,.0f} TFLOP/s | "
+            f"{ceiling.ridge_point_flops_per_byte:,.1f} FLOP/byte |"
         )
     lines.extend(
         [
@@ -106,7 +119,7 @@ def main() -> int:
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    profile = json.loads(args.input.read_text())
+    profile = load_profile(args.input)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(render(profile))
     return 0

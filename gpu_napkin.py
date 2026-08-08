@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import cast
+
+from napkin_profile import GemmDtype, Profile, get_metric, load_profile, roofline_ceiling
 
 
 REPOSITORY_PROFILE = Path(__file__).parent / "results" / "h100-sxm.json"
@@ -26,21 +27,15 @@ class Estimate:
     total_ms: float
     bottleneck: str
     arithmetic_intensity: float
-
-
-def _metric(profile: dict[str, Any], name: str) -> dict[str, Any]:
-    metrics = profile["metrics"]
-    if name not in metrics:
-        raise ValueError(f"profile does not contain metric {name!r}")
-    return metrics[name]
+    ridge_point_flops_per_byte: float
 
 
 def estimate(
-    profile: dict[str, Any],
+    profile: Profile,
     *,
     flops: float,
     device_bytes: float,
-    dtype: str = "fp16",
+    dtype: GemmDtype = "fp16",
     host_to_device_bytes: float = 0.0,
     device_to_host_bytes: float = 0.0,
     launches: int = 1,
@@ -56,19 +51,18 @@ def estimate(
     ):
         raise ValueError("work quantities must be non-negative")
 
-    compute_metric = _metric(profile, f"gemm_{dtype}")
-    memory_metric = _metric(profile, "hbm_copy")
-    launch_metric = _metric(profile, "tiny_kernel")
+    ceiling = roofline_ceiling(profile, dtype)
+    launch_metric = get_metric(profile, "tiny_kernel")
 
-    compute_ms = flops / (compute_metric["value"] * 1e12) * 1e3
-    memory_ms = device_bytes / (memory_metric["value"] * 1e9) * 1e3
+    compute_ms = flops / (ceiling.compute_tflops * 1e12) * 1e3
+    memory_ms = device_bytes / (ceiling.memory_gbps * 1e9) * 1e3
 
     transfer_ms = 0.0
     if host_to_device_bytes:
-        h2d = _metric(profile, "host_to_device")["value"] * 1e9
+        h2d = get_metric(profile, "host_to_device")["value"] * 1e9
         transfer_ms += host_to_device_bytes / h2d * 1e3
     if device_to_host_bytes:
-        d2h = _metric(profile, "device_to_host")["value"] * 1e9
+        d2h = get_metric(profile, "device_to_host")["value"] * 1e9
         transfer_ms += device_to_host_bytes / d2h * 1e3
 
     launch_ms = launches * launch_metric["value"] / 1e3
@@ -95,6 +89,7 @@ def estimate(
         total_ms=total_ms,
         bottleneck=bottleneck,
         arithmetic_intensity=intensity,
+        ridge_point_flops_per_byte=ceiling.ridge_point_flops_per_byte,
     )
 
 
@@ -123,12 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.launches < 0:
         raise SystemExit("--launches must be non-negative")
-    profile = json.loads(args.profile.read_text())
+    profile = load_profile(args.profile)
     result = estimate(
         profile,
         flops=args.flops,
         device_bytes=args.device_bytes,
-        dtype=args.dtype,
+        dtype=cast(GemmDtype, args.dtype),
         host_to_device_bytes=args.h2d_bytes,
         device_to_host_bytes=args.d2h_bytes,
         launches=args.launches,
@@ -141,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"GPU:              {profile['device']['name']}")
     print(f"Arithmetic intensity: {intensity} FLOP/byte")
+    print(f"Roofline ridge:   {result.ridge_point_flops_per_byte:.2f} FLOP/byte")
     print(f"Compute floor:    {result.compute_ms:.3f} ms")
     print(f"Memory floor:     {result.memory_ms:.3f} ms")
     print(f"Device estimate:  {result.device_ms:.3f} ms ({result.bottleneck}-bound)")

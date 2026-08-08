@@ -27,6 +27,17 @@ The H100 is roughly 2× faster for transfers and bandwidth but about 3× faster
 for tensor math in these runs. A GPU name is therefore part of every estimate,
 not a footnote.
 
+The reports also publish a roofline **ridge point** for each precision. This is
+the arithmetic intensity where the measured compute and HBM ceilings meet:
+
+```text
+ridge point (FLOP/byte) = compute (TFLOP/s) × 1000 / HBM (GB/s)
+```
+
+Below that intensity, the simple roofline predicts a memory-bound workload;
+above it, a compute-bound workload. Unlike a datasheet roofline, these crossover
+points use the same measured PyTorch/cuBLAS ceilings as the calculator.
+
 ## H100 numbers worth memorizing
 
 Measured on a Modal `NVIDIA H100 80GB HBM3` (SXM) on August 8, 2026. The
@@ -181,11 +192,14 @@ and contention. If an estimate is off by 2×, that is useful; if it is off by
 
 ## Development
 
-Run the local, GPU-free checks with:
+Run the GPU-free checks in a Modal CPU container with:
 
 ```sh
-python3 -m pytest
-python3 -m compileall gpu_napkin.py modal_benchmark.py render_results.py
+modal shell --add-python 3.12 --add-local . -c \
+  'cd /mnt/napkin-math-gpu && python -m pip install ".[test]" ty && \
+   python -m pytest && \
+   ty check gpu_napkin.py napkin_profile.py render_results.py tests/test_gpu_napkin.py && \
+   python -m compileall gpu_napkin.py napkin_profile.py modal_benchmark.py render_results.py'
 ```
 
 ## Acknowledgements
@@ -193,4 +207,12 @@ python3 -m compileall gpu_napkin.py modal_benchmark.py render_results.py
 The structure and philosophy are inspired by
 [sirupsen/napkin-math](https://github.com/sirupsen/napkin-math), created by
 Simon Eskildsen and licensed under MIT. No upstream source code is copied into
-the GPU benchmark. This project is also MIT licensed.
+the GPU benchmark.
+
+The ridge-point presentation was informed by George Typaldos's
+[GPU-Roofline-Python](https://github.com/Giotyp/GPU-Roofline-Python), also MIT
+licensed. The ridge points here use this repository's measured profiles rather
+than copying that tool's theoretical GPU registry, profiler parser, or plotting
+stack.
+
+This project is also MIT licensed.

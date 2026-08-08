@@ -11,24 +11,43 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import NamedTuple, cast
 
 import modal
+
+from napkin_profile import SCHEMA_VERSION, Metric, Metrics, Profile, make_metric
 
 
 TORCH_VERSION = "2.8.0"
 NUMPY_VERSION = "2.2.6"
-H100_GPU = "H100!"  # The ! suffix prevents an automatic H200 upgrade.
-A100_GPU = "A100-80GB"
 
-image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
-    f"torch=={TORCH_VERSION}",
-    f"numpy=={NUMPY_VERSION}",
+
+class GpuTarget(NamedTuple):
+    key: str
+    modal_request: str
+    default_output: str
+
+
+# One row per supported GPU. Modal needs a decorate-time gpu= string, so wrappers
+# are generated from this table (H100! blocks a silent H200 upgrade).
+GPU_TARGETS: tuple[GpuTarget, ...] = (
+    GpuTarget("h100", "H100!", "results/h100-sxm.json"),
+    GpuTarget("a100", "A100-80GB", "results/a100-80gb-pcie.json"),
+)
+GPU_BY_KEY = {target.key: target for target in GPU_TARGETS}
+
+image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_pip_install(
+        f"torch=={TORCH_VERSION}",
+        f"numpy=={NUMPY_VERSION}",
+    )
+    .add_local_python_source("napkin_profile")
 )
 app = modal.App("gpu-napkin-math", image=image)
 
 
-def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
+def _benchmark(*, gpu_request: str, quick: bool = False) -> Profile:
     import platform
     import statistics
     import subprocess
@@ -62,20 +81,28 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
             samples.append(start.elapsed_time(end) / iterations)
         return samples
 
-    def metric(
-        samples_ms: list[float], *, value: float, unit: str, **details: Any
-    ) -> dict[str, Any]:
-        return {
-            "value": value,
-            "unit": unit,
-            "median_ms": statistics.median(samples_ms),
-            "samples_ms": samples_ms,
-            **details,
-        }
-
     rounds = 3 if quick else 7
-    metrics: dict[str, dict[str, Any]] = {}
+    metrics: dict[str, Metric] = {}
     checks: dict[str, bool] = {}
+
+    def record_bandwidth(
+        name: str,
+        *,
+        samples_ms: list[float],
+        bytes_counted: int,
+        **details: object,
+    ) -> None:
+        median_ms = statistics.median(samples_ms)
+        metrics[name] = make_metric(
+            samples_ms,
+            value=bytes_counted / (median_ms / 1e3) / 1e9,
+            unit="GB/s",
+            bytes_counted=bytes_counted,
+            **details,
+        )
+
+    def probe_indices(n: int, *, on_device: bool = False) -> torch.Tensor:
+        return torch.tensor([0, n // 2, n - 1], device=device if on_device else "cpu")
 
     # One-element in-place add: end-to-end tiny-kernel latency.
     tiny = torch.ones(1, device=device)
@@ -83,7 +110,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
         lambda: tiny.add_(1), warmups=20, iterations=100 if quick else 1000, rounds=rounds
     )
     tiny_us = statistics.median(tiny_samples) * 1e3
-    metrics["tiny_kernel"] = metric(
+    metrics["tiny_kernel"] = make_metric(
         tiny_samples,
         value=tiny_us,
         unit="us",
@@ -91,91 +118,74 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
     )
     checks["tiny_kernel_finite"] = torch.isfinite(tiny).all().item()
 
-    # HBM copy counts both the read and the write.
-    copy_mib = 128 if quick else 512
-    copy_elements = copy_mib * 1024 * 1024 // 4
-    copy_src = torch.arange(copy_elements, dtype=torch.float32, device=device)
-    copy_dst = torch.empty_like(copy_src)
-    copy_samples = cuda_samples(
-        lambda: copy_dst.copy_(copy_src), warmups=10, iterations=10 if quick else 30, rounds=rounds
-    )
-    copy_ms = statistics.median(copy_samples)
-    copy_bytes = copy_src.numel() * copy_src.element_size() * 2
-    copy_gbps = copy_bytes / (copy_ms / 1e3) / 1e9
-    metrics["hbm_copy"] = metric(
-        copy_samples,
-        value=copy_gbps,
-        unit="GB/s",
-        allocation_mib=copy_mib,
-        bytes_counted=copy_bytes,
-        convention="source read plus destination write",
-    )
-    check_idx = torch.tensor([0, copy_elements // 2, copy_elements - 1], device=device)
-    checks["hbm_copy"] = torch.equal(copy_src[check_idx], copy_dst[check_idx])
+    # Device bandwidth ops: one row per measurement (time → GB/s from algorithmic bytes).
+    device_bw_iters = 10 if quick else 30
 
-    # Elementwise add: 12 bytes/element (2 fp32 reads + 1 write).
-    add_mib = 64 if quick else 256
-    add_elements = add_mib * 1024 * 1024 // 4
-    add_a = torch.randn(add_elements, dtype=torch.float32, device=device)
-    add_b = torch.randn_like(add_a)
-    add_out = torch.empty_like(add_a)
-    add_samples = cuda_samples(
-        lambda: torch.add(add_a, add_b, out=add_out),
-        warmups=10,
-        iterations=10 if quick else 30,
-        rounds=rounds,
-    )
-    add_ms = statistics.median(add_samples)
-    add_bytes = add_elements * 3 * 4
-    add_gbps = add_bytes / (add_ms / 1e3) / 1e9
-    metrics["elementwise_add"] = metric(
-        add_samples,
-        value=add_gbps,
-        unit="GB/s",
-        elements=add_elements,
-        bytes_counted=add_bytes,
-        convention="two reads plus one write",
-    )
-    add_check_idx = torch.tensor([0, add_elements // 2, add_elements - 1], device=device)
-    checks["elementwise_add"] = bool(
-        torch.allclose(add_out[add_check_idx], add_a[add_check_idx] + add_b[add_check_idx])
-    )
+    def setup_hbm_copy(mib: int):
+        n = mib * 1024 * 1024 // 4
+        src = torch.arange(n, dtype=torch.float32, device=device)
+        dst = torch.empty_like(src)
+        idx = probe_indices(n, on_device=True)
+        return (
+            lambda: dst.copy_(src),
+            src.numel() * src.element_size() * 2,
+            lambda: torch.equal(src[idx], dst[idx]),
+            {"allocation_mib": mib, "convention": "source read plus destination write"},
+        )
+
+    def setup_elementwise_add(mib: int):
+        n = mib * 1024 * 1024 // 4
+        a = torch.randn(n, dtype=torch.float32, device=device)
+        b = torch.randn_like(a)
+        out = torch.empty_like(a)
+        idx = probe_indices(n, on_device=True)
+        return (
+            lambda: torch.add(a, b, out=out),
+            n * 3 * 4,
+            lambda: bool(torch.allclose(out[idx], a[idx] + b[idx])),
+            {"elements": n, "convention": "two reads plus one write"},
+        )
+
+    for name, mib, setup in (
+        ("hbm_copy", 128 if quick else 512, setup_hbm_copy),
+        ("elementwise_add", 64 if quick else 256, setup_elementwise_add),
+    ):
+        fn, bytes_counted, check_fn, details = setup(mib)
+        samples = cuda_samples(fn, warmups=10, iterations=device_bw_iters, rounds=rounds)
+        record_bandwidth(name, samples_ms=samples, bytes_counted=bytes_counted, **details)
+        checks[name] = check_fn()
 
     # Pinned host + non-blocking copies measure link bandwidth, not pageable staging.
     transfer_mib = 64 if quick else 512
     transfer_elements = transfer_mib * 1024 * 1024 // 4
+    transfer_bytes = transfer_elements * 4
+    transfer_iters = 5 if quick else 20
     host_src = torch.arange(transfer_elements, dtype=torch.float32, pin_memory=True)
     host_dst = torch.empty(transfer_elements, dtype=torch.float32, pin_memory=True)
     gpu_transfer = torch.empty(transfer_elements, dtype=torch.float32, device=device)
-    h2d_samples = cuda_samples(
-        lambda: gpu_transfer.copy_(host_src, non_blocking=True),
-        warmups=5,
-        iterations=5 if quick else 20,
-        rounds=rounds,
+    host_transfer_ops = (
+        (
+            "host_to_device",
+            lambda: gpu_transfer.copy_(host_src, non_blocking=True),
+            "pinned host to device",
+        ),
+        (
+            "device_to_host",
+            lambda: host_dst.copy_(gpu_transfer, non_blocking=True),
+            "device to pinned host",
+        ),
     )
-    d2h_samples = cuda_samples(
-        lambda: host_dst.copy_(gpu_transfer, non_blocking=True),
-        warmups=5,
-        iterations=5 if quick else 20,
-        rounds=rounds,
-    )
-    torch.cuda.synchronize()
-    transfer_bytes = transfer_elements * 4
-    for name, samples, direction in (
-        ("host_to_device", h2d_samples, "pinned host to device"),
-        ("device_to_host", d2h_samples, "device to pinned host"),
-    ):
-        median_ms = statistics.median(samples)
-        gbps = transfer_bytes / (median_ms / 1e3) / 1e9
-        metrics[name] = metric(
-            samples,
-            value=gbps,
-            unit="GB/s",
-            allocation_mib=transfer_mib,
+    for name, fn, direction in host_transfer_ops:
+        samples = cuda_samples(fn, warmups=5, iterations=transfer_iters, rounds=rounds)
+        record_bandwidth(
+            name,
+            samples_ms=samples,
             bytes_counted=transfer_bytes,
+            allocation_mib=transfer_mib,
             direction=direction,
         )
-    transfer_indices = torch.tensor([0, transfer_elements // 2, transfer_elements - 1])
+    torch.cuda.synchronize()
+    transfer_indices = probe_indices(transfer_elements)
     checks["host_device_round_trip"] = torch.equal(
         host_src[transfer_indices], host_dst[transfer_indices]
     )
@@ -208,7 +218,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
         median_ms = statistics.median(samples)
         flops = 2 * gemm_n**3
         tflops = flops / (median_ms / 1e3) / 1e12
-        metrics[f"gemm_{label}"] = metric(
+        metrics[f"gemm_{label}"] = make_metric(
             samples,
             value=tflops,
             unit="TFLOP/s",
@@ -256,7 +266,7 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
         raise AssertionError(f"correctness checks failed: {failures}")
 
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "mode": "quick" if quick else "full",
         "device": {
@@ -284,33 +294,38 @@ def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
             "seed": 20260808,
         },
         "checks": checks,
-        "metrics": metrics,
+        "metrics": cast(Metrics, metrics),
     }
 
 
-@app.function(gpu=H100_GPU, timeout=20 * 60, scaledown_window=60)
-def benchmark_h100(quick: bool = False) -> dict[str, Any]:
-    return _benchmark(gpu_request=H100_GPU, quick=quick)
+def _make_remote_benchmark(target: GpuTarget):
+    """Bind a Modal Function to a fixed decorate-time GPU request string."""
+
+    @app.function(
+        gpu=target.modal_request,
+        timeout=20 * 60,
+        scaledown_window=60,
+        name=f"benchmark_{target.key}",
+    )
+    def benchmark(quick: bool = False) -> Profile:
+        return _benchmark(gpu_request=target.modal_request, quick=quick)
+
+    return benchmark
 
 
-@app.function(gpu=A100_GPU, timeout=20 * 60, scaledown_window=60)
-def benchmark_a100(quick: bool = False) -> dict[str, Any]:
-    return _benchmark(gpu_request=A100_GPU, quick=quick)
+REMOTE_BENCHMARKS = {target.key: _make_remote_benchmark(target) for target in GPU_TARGETS}
 
 
 @app.local_entrypoint()
 def main(gpu: str = "h100", output: str = "", quick: bool = False) -> None:
-    if gpu == "h100":
-        remote_benchmark = benchmark_h100
-        default_output = "results/h100-sxm.json"
-    elif gpu == "a100":
-        remote_benchmark = benchmark_a100
-        default_output = "results/a100-80gb-pcie.json"
-    else:
-        raise ValueError("--gpu must be 'h100' or 'a100'")
+    try:
+        target = GPU_BY_KEY[gpu]
+    except KeyError as exc:
+        choices = ", ".join(repr(key) for key in GPU_BY_KEY)
+        raise ValueError(f"--gpu must be one of: {choices}") from exc
 
-    result = remote_benchmark.remote(quick=quick)
-    output_path = Path(output or default_output)
+    result = REMOTE_BENCHMARKS[target.key].remote(quick=quick)
+    output_path = Path(output or target.default_output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Wrote {output_path}")

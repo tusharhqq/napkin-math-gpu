@@ -10,9 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = [
-    "ty>=0.0.66",
-]
+dependencies = []
 
 [project.optional-dependencies]
 benchmark = ["modal==1.5.3"]
@@ -22,7 +20,7 @@ test = ["pytest>=8.0,<9"]
 gpu-napkin = "gpu_napkin:main"
 
 [tool.setuptools]
-py-modules = ["gpu_napkin", "modal_benchmark", "render_results"]
+py-modules = ["gpu_napkin", "napkin_profile", "render_results"]
 
 [tool.setuptools.data-files]
 "share/gpu-napkin-math" = ["results/h100-sxm.json", "results/a100-80gb-pcie.json"]

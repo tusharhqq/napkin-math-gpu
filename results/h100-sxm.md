@@ -14,6 +14,17 @@ Captured `2026-08-08T17:38:29.399349+00:00` using the `H100!` Modal request in `
 | tf32 matrix multiply | 375 TFLOP/s | 2.9357 ms | 1 TFLOP → 2.67 ms | 1 PFLOP → 2.67 s |
 | fp32 matrix multiply (TF32 disabled) | 52 TFLOP/s | 21.2375 ms | 1 TFLOP → 19.3 ms | 1 PFLOP → 19.3 s |
 
+## Roofline ridge points
+
+The ridge point is `compute ceiling ÷ HBM bandwidth`. A workload below it is memory-bound in this model; above it, compute-bound.
+
+| Precision | Measured compute ceiling | Ridge point |
+| --- | ---: | ---: |
+| fp16 | 702 TFLOP/s | 233.7 FLOP/byte |
+| bf16 | 711 TFLOP/s | 236.9 FLOP/byte |
+| tf32 | 375 TFLOP/s | 124.7 FLOP/byte |
+| fp32 | 52 TFLOP/s | 17.2 FLOP/byte |
+
 ## Environment
 
 - GPU: `NVIDIA H100 80GB HBM3`; 81559 MiB; compute capability 9.0
