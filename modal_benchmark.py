@@ -1,4 +1,9 @@
-"""Run the GPU Napkin Math benchmark on a pinned Modal GPU.
+"""Run the prototype calibration harness on pinned Modal GPUs.
+
+Published evidence should come from the authoritative tools mapped in
+BENCHMARKS.md. Keep this producer for calibration and cross-checking; do not grow
+it into a replacement for NVIDIA datasheets, NVBandwidth, NCCL Tests, Nsight
+Compute, cuBLAS/cuBLASLt, or MLPerf.
 
 Usage:
     modal run modal_benchmark.py
@@ -28,8 +33,8 @@ class GpuTarget(NamedTuple):
     default_output: str
 
 
-# One row per supported GPU. Canonical runs use two same-host GPUs so the profile
-# owns the complete CPU RAM → PCIe → HBM → compute → interconnect path.
+# One row per supported GPU. Full calibration runs use two same-host GPUs so the
+# prototype profile covers CPU RAM → PCIe → HBM → compute → interconnect.
 # Modal needs a decorate-time gpu= string, so wrappers are generated here.
 GPU_TARGETS: tuple[GpuTarget, ...] = (
     GpuTarget("h100", "H100!:2", "results/h100-sxm.json"),

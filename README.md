@@ -12,8 +12,10 @@ Five numbers, simple arithmetic, and a rough answer for an H100 workload.
 | BF16 compute | **700 TFLOP/s** |
 | BF16 ridge point | **240 FLOP/byte** |
 
-These are measured H100 numbers rounded for mental math, not precision
-predictions.
+These are working H100 numbers rounded for mental math, not precision
+predictions. The evidence guide tracks which values are still backed by the
+prototype calibration profile and which must be refreshed from authoritative
+tools.
 
 ## Use them
 
@@ -101,9 +103,9 @@ It can also include `--cpu-bytes`, `--d2h-bytes`, and
 
 ## Behind the numbers
 
-The [benchmark and evidence guide](BENCHMARKS.md) contains the Modal workflow,
-A100 comparison, exact measurements, topology, raw-profile schema, caveats, and
-development checks. Precise artifacts are available as the H100
+The [evidence guide](BENCHMARKS.md) maps each number to the NVIDIA or MLCommons
+tool that owns it and explains how outputs become rounded napkin numbers. The
+current prototype calibration artifacts are available as the H100
 ([report](results/h100-sxm.md), [JSON](results/h100-sxm.json)) and A100
 ([report](results/a100-80gb-sxm4.md), [JSON](results/a100-80gb-sxm4.json))
 profiles.

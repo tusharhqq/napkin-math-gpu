@@ -1,111 +1,181 @@
 # Behind the GPU Napkin Math numbers
 
-This is the evidence and implementation layer. The user-facing product is the
-small set of rounded numbers and arithmetic in the [README](README.md).
+The repository should ingest, normalize, and cross-check authoritative evidence.
+It should not reimplement mature NVIDIA benchmark and profiling tools.
 
-## Canonical profiles
+The user-facing product remains the rounded numbers and arithmetic in the
+[README](README.md). Modal is an execution environment for the evidence tools,
+not itself a measurement methodology.
 
-Both profiles are full, seven-round, two-GPU Modal runs captured on August 8,
-2026. The table below is intentionally precise; these values support the rounded
-numbers in the README and are not another table to memorize.
+## Source-of-truth policy
 
-| Measurement | H100 | A100 |
-| --- | ---: | ---: |
-| Pinned CPU RAM copy | 72 GB/s | 71 GB/s |
-| Pinned host → GPU | 55 GB/s | 26 GB/s |
-| GPU → pinned host | 55 GB/s | 26 GB/s |
-| HBM copy | 3,000 GB/s | 1,750 GB/s |
-| Tiny kernel | 4.66 μs | 5.23 μs |
-| BF16 GEMM | 717 TFLOP/s | 289 TFLOP/s |
-| BF16 ridge point | 239.2 FLOP/byte | 165.4 FLOP/byte |
-| GPU 0 ↔ GPU 1 | 393 GB/s | 274 GB/s |
+| Napkin input | Primary authority | What the repository keeps |
+| --- | --- | --- |
+| Peak FLOPs by dtype | NVIDIA product datasheet | Dense/sparse convention, precision, form factor, source URL, published value |
+| HBM bandwidth and capacity | NVIDIA product datasheet | Theoretical bandwidth and capacity |
+| NVLink generation and peak bandwidth | NVIDIA product or system datasheet | Per-GPU theoretical aggregate and topology assumptions |
+| CPU↔GPU and GPU↔GPU bandwidth | NVIDIA NVBandwidth | Version, command, topology, raw JSON, normalized directional values |
+| P2P latency and connectivity | CUDA Samples `p2pBandwidthLatencyTest` | Pinned CUDA Samples revision, command, raw matrix |
+| AllReduce | NVIDIA NCCL Tests `all_reduce_perf` | Algorithm bandwidth, bus bandwidth, message-size curve, topology |
+| AllGather | NVIDIA NCCL Tests `all_gather_perf` | Algorithm bandwidth, bus bandwidth, message-size curve, topology |
+| ReduceScatter | NVIDIA NCCL Tests `reduce_scatter_perf` | Algorithm bandwidth, bus bandwidth, message-size curve, topology |
+| L1/L2/HBM behavior and roofline | NVIDIA Nsight Compute | `.ncu-rep` export, selected sections/metrics, kernel identity |
+| Achievable GEMM | cuBLAS/cuBLASLt | Library/CUDA version, dtype, shape, layout, algorithm, measured throughput |
+| End-to-end model validity | Published or reproduced MLPerf results | Matched system/workload, prediction, observed result, error ratio |
+
+If an authoritative source exists, a homegrown throughput loop must not define a
+published napkin number. Small bespoke code is still appropriate for parsing,
+normalization, correctness checks, prediction, and gaps such as a framework-level
+tiny-kernel floor.
+
+## Important CUDA tooling update
+
+CUDA Samples removed `bandwidthTest` in CUDA 12.9 because NVIDIA found it could
+produce inaccurate results. NVIDIA now directs bandwidth measurement to
+[NVBandwidth](https://github.com/NVIDIA/nvbandwidth), which covers host↔device,
+device↔device, copy-engine and SM paths, directional and bidirectional tests,
+latency, verification, and JSON output.
+
+Use CUDA Samples'
+[`p2pBandwidthLatencyTest`](https://github.com/NVIDIA/cuda-samples/tree/master/cpp/5_Domain_Specific/p2pBandwidthLatencyTest)
+for its P2P latency/connectivity matrix, not as the sole bandwidth authority.
+Pin the CUDA Samples revision so a profile can be reproduced after samples move
+or change.
+
+## Evidence flow
+
+```text
+vendor datasheets         NVIDIA/MLCommons tools
+        │                        │
+        └── pinned raw evidence ──┘
+                     │
+             typed normalization
+                     │
+             consistency checks
+                     │
+              versioned profile
+                     │
+              rounded README
+                     │
+             MLPerf prediction check
+```
+
+Every normalized metric should carry:
+
+- authority and tool name;
+- source URL or exact command;
+- tool, CUDA, driver, and library versions where applicable;
+- GPU model, form factor, count, and topology;
+- theoretical versus achieved classification;
+- precision and dense/sparse convention;
+- raw artifact path;
+- units and byte/FLOP counting convention.
+
+Theoretical and achieved values must remain separate. For example, a datasheet
+BF16 peak is a hardware ceiling; a cuBLASLt result is an achievable library
+ceiling. Both can be useful, but they answer different questions.
+
+## Tool responsibilities
+
+### Vendor datasheets
+
+Datasheets own stable hardware facts: memory capacity, theoretical HBM bandwidth,
+peak arithmetic throughput, PCIe generation, and peak NVLink bandwidth. Record
+the exact SKU and form factor. Do not silently mix H100 SXM with H100 NVL, or A100
+PCIe with A100 SXM.
+
+Start with NVIDIA's [H100 product
+specifications](https://www.nvidia.com/en-us/data-center/h100/) and [A100 80 GB
+datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-nvidia-us-2188504-web.pdf),
+then pin the exact source used by each profile.
+
+Datasheet tensor figures must record whether structured sparsity is enabled. The
+napkin table should normally use dense numbers unless the workload explicitly
+depends on supported sparsity.
+
+### NVBandwidth and CUDA Samples
+
+NVBandwidth owns achieved memcpy bandwidth across the actual system topology.
+At minimum collect:
+
+- `host_to_device_memcpy_ce`;
+- `device_to_host_memcpy_ce`;
+- directional device-to-device copy-engine bandwidth;
+- directional device-to-device SM bandwidth;
+- latency for the relevant host/device and device/device paths;
+- JSON output with verification enabled.
+
+CUDA Samples' `p2pBandwidthLatencyTest` supplies an independently maintained P2P
+connectivity and latency matrix. Store both the sample revision and its raw
+stdout.
+
+### NCCL Tests
+
+Use NVIDIA's [NCCL Tests](https://github.com/NVIDIA/nccl-tests). Collect full
+message-size curves for `all_reduce_perf`, `all_gather_perf`, and
+`reduce_scatter_perf`, not one headline number. Retain both `algbw` and `busbw`:
+the former estimates application-visible time; the latter helps compare link
+utilization across collective algorithms.
+
+Correctness checks stay enabled. Record NCCL version, GPU count, rank layout,
+topology, datatype, reduction operator, warmups, iterations, and whether CUDA
+graphs or buffer registration were enabled.
+
+### Nsight Compute
+
+Use [Nsight Compute](https://docs.nvidia.com/nsight-compute/ProfilingGuide/)'s
+Speed of Light, Memory Workload Analysis, and roofline sections on
+representative kernels. The profiler owns achieved L1/L2/HBM behavior,
+arithmetic intensity, and hierarchical roofline placement.
+
+Keep the `.ncu-rep` artifact and exported metrics. Do not convert a profiled
+kernel's achieved bandwidth into a universal hardware specification; compare it
+with the datasheet ceiling and label it as workload-specific.
+
+### cuBLAS and cuBLASLt
+
+Use [cuBLAS/cuBLASLt](https://docs.nvidia.com/cuda/cublas/) for GEMM rather than
+a handwritten matrix-multiply kernel. The evidence record must include shape,
+dtype, accumulation type, layouts, epilogue, workspace, and selected algorithm.
+Query cuBLASLt heuristics once and reuse the selected algorithm during timing.
+
+### MLPerf
+
+[MLPerf Inference](https://mlcommons.org/benchmarks/inference-datacenter/) is the
+model-level falsification step. Pick published results or reproduce a workload
+only when the system, GPU count, scenario, accuracy target, and software
+configuration are comparable.
+
+For each validation case, publish:
+
+```text
+napkin prediction
+observed MLPerf throughput or latency
+prediction / observation ratio
+dominant term predicted by the model
+explanation when the error is outside the stated tolerance
+```
+
+The goal is not to fit the napkin constants to MLPerf. The goal is to discover
+where the simple model is missing utilization, communication, batching, or
+software overhead.
+
+## Status of the checked-in profiles
+
+The current H100 and A100 JSON files are **prototype calibration snapshots**, not
+the final authoritative evidence format:
 
 - H100: [report](results/h100-sxm.md) · [raw JSON](results/h100-sxm.json)
 - A100: [report](results/a100-80gb-sxm4.md) · [raw JSON](results/a100-80gb-sxm4.json)
 
-The JSON files are the source of truth and retain every round sample, precise
-directional peer-transfer values, correctness checks, software versions, and
-the NVIDIA topology output exposed inside the container.
+They remain useful because they established the typed profile, correctness
+checks, renderer, estimator, two-GPU allocation, and approximate rounding. They
+must be replaced metric-by-metric by the source policy above before being called
+canonical.
 
-## Evidence pipeline
-
-```text
-Modal two-GPU allocation
-          │
-modal_benchmark.py
-          │
-PyTorch / cuBLAS measurements + correctness checks
-          │
-schema-v2 typed JSON profile
-          │
-render_results.py + tests
-          │
-rounded README numbers
-```
-
-`modal_benchmark.py` is producer-only and does not import the estimator. The
-shared contract in `napkin_profile.py` requires CPU RAM, CPU↔GPU, HBM, compute,
-tiny-kernel, and GPU↔GPU metrics. A profile missing one of those stages does not
-validate.
-
-## Run the canonical benchmarks
-
-Install and authenticate the Modal CLI, then run:
-
-```sh
-python3 -m pip install 'modal==1.5.3'
-modal run modal_benchmark.py
-modal run modal_benchmark.py --gpu a100
-python3 render_results.py results/h100-sxm.json results/h100-sxm.md
-python3 render_results.py results/a100-80gb-sxm4.json results/a100-80gb-sxm4.md
-```
-
-| Profile | Measured devices | Modal request | Exposed topology |
-| --- | --- | --- | --- |
-| H100 | 2× `NVIDIA H100 80GB HBM3` | `H100!:2` | 18 active NVLinks per GPU |
-| A100 | 2× `NVIDIA A100-SXM4-80GB` | `A100-80GB:2` | 12 active NVLinks per GPU |
-
-The H100 `!` prevents a silent H200 upgrade. The A100 artifact is named SXM4
-because that is the device returned by the two-GPU allocation; it is not the
-PCIe device returned by the earlier single-GPU run.
-
-For a short smoke test:
-
-```sh
-modal run modal_benchmark.py --quick --output /tmp/gpu-napkin-quick.json
-```
-
-Never publish `--quick` output as a canonical profile.
-
-## Measurement method
-
-- CPU RAM is an 8-thread pinned-buffer copy timed with `perf_counter`. Bytes
-  counted include the source read and destination write.
-- CPU↔GPU uses reusable pinned host buffers and asynchronous copies.
-- HBM copy counts the source read and destination write. Elementwise add counts
-  two reads and one write.
-- GPU operations use CUDA events after per-operation warmup.
-- GEMM counts `2 × M × N × K` FLOPs. The BF16, FP16, TF32, and strict-FP32
-  paths are recorded separately.
-- GPU↔GPU is a direct one-way peer copy. The reported value is the slower of
-  GPU 0→1 and GPU 1→0; both directional values remain in JSON.
-- Each full result is the median of seven rounds. All round samples are retained.
-
-## Correctness and scope boundaries
-
-- Every run fails if the CPU copy, host/device round trip, HBM operations, peer
-  copies, or GEMM checks fail.
-- Matrix validation uses an independent CPU float64 reference on a smaller fixed
-  problem.
-- PyTorch/cuBLAS throughput is a production-relevant ceiling, not bare-metal
-  hardware peak and not a claim about every framework.
-- The tiny-kernel metric is a one-element in-place add including scheduling and
-  execution. It is not a host-only CUDA API launch measurement.
-- Algorithmic bytes are used instead of hardware performance counters.
-- The CPU model and PCI bus IDs are masked by the Modal runtime and are recorded
-  as unavailable rather than inferred.
-- The interconnect profile covers same-host point-to-point copies. Collective
-  algorithms and multi-node networking are not modeled yet.
+`modal_benchmark.py` is therefore a calibration harness. Future work should add
+thin runners/parsers around pinned upstream tools instead of extending its
+homegrown measurement loops.
 
 ## Development checks
 
@@ -119,8 +189,6 @@ modal shell --add-python 3.12 --add-local . -c \
    python -m compileall gpu_napkin.py napkin_profile.py modal_benchmark.py render_results.py'
 ```
 
-The ridge-point presentation was informed by George Typaldos's
-[GPU-Roofline-Python](https://github.com/Giotyp/GPU-Roofline-Python), licensed
-under MIT. The repository also bundles an MIT-licensed upstream
-[Napkin Math snapshot](reference/napkin-math) for study; its CPU numbers are not
-used as this project's measured CPU profile.
+The repository bundles an MIT-licensed upstream
+[Napkin Math snapshot](reference/napkin-math) for study. Its numbers are not
+substituted for GPU evidence.
