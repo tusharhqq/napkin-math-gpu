@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-napkin-math"
+version = "0.1.0"
+description = "Measured GPU numbers and a tiny roofline calculator"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.optional-dependencies]
+benchmark = ["modal==1.5.3"]
+test = ["pytest>=8.0,<9"]
+
+[project.scripts]
+gpu-napkin = "gpu_napkin:main"
+
+[tool.setuptools]
+py-modules = ["gpu_napkin", "modal_benchmark", "render_results"]
+
+[tool.setuptools.data-files]
+"share/gpu-napkin-math" = ["results/h100-sxm.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

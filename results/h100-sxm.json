@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-08T17:38:29.399349+00:00",
+  "mode": "full",
+  "device": {
+    "name": "NVIDIA H100 80GB HBM3",
+    "uuid": "GPU-7a6c4455-153d-39c6-bf61-d1d148ffdee2",
+    "memory_mib": 81559,
+    "pci_bus_id": "[Unknown Error]",
+    "power_limit_w": 700.0,
+    "compute_capability": "9.0",
+    "multiprocessor_count": 132
+  },
+  "software": {
+    "python": "3.12.10",
+    "torch": "2.8.0+cu128",
+    "cuda_runtime": "12.8",
+    "nvidia_driver": "580.95.05",
+    "cudnn": "91002"
+  },
+  "methodology": {
+    "timer": "CUDA events on the default stream",
+    "statistic": "median of 7 rounds after per-operation warmup",
+    "allocation_units": "MiB (2^20 bytes)",
+    "throughput_units": "GB/s (10^9 bytes/s) and TFLOP/s (10^12 FLOP/s)",
+    "gpu_request": "H100!",
+    "seed": 20260808
+  },
+  "checks": {
+    "tiny_kernel_finite": true,
+    "hbm_copy": true,
+    "elementwise_add": true,
+    "host_device_round_trip": true,
+    "gemm_fp16": true,
+    "gemm_bf16": true,
+    "gemm_tf32": true,
+    "gemm_fp32": true
+  },
+  "metrics": {
+    "tiny_kernel": {
+      "value": 5.169151782989502,
+      "unit": "us",
+      "median_ms": 0.005169151782989502,
+      "samples_ms": [
+        0.005478079795837402,
+        0.00518393611907959,
+        0.005177663803100586,
+        0.005167520046234131,
+        0.005169151782989502,
+        0.005091135978698731,
+        0.005062687873840332
+      ],
+      "operation": "torch.Tensor.add_ on one fp32 element"
+    },
+    "hbm_copy": {
+      "value": 3003.6730419569612,
+      "unit": "GB/s",
+      "median_ms": 0.35747626622517903,
+      "samples_ms": [
+        0.35767892201741536,
+        0.35739094416300454,
+        0.3574432055155436,
+        0.3575167973836263,
+        0.35737492243448893,
+        0.35747626622517903,
+        0.3576383908589681
+      ],
+      "allocation_mib": 512,
+      "bytes_counted": 1073741824,
+      "convention": "source read plus destination write"
+    },
+    "elementwise_add": {
+      "value": 3063.94612248263,
+      "unit": "GB/s",
+      "median_ms": 0.2628330707550049,
+      "samples_ms": [
+        0.2629685401916504,
+        0.2628885269165039,
+        0.2629535992940267,
+        0.2628330707550049,
+        0.262828795115153,
+        0.2627775986989339,
+        0.2628138701121012
+      ],
+      "elements": 67108864,
+      "bytes_counted": 805306368,
+      "convention": "two reads plus one write"
+    },
+    "host_to_device": {
+      "value": 55.54987158464343,
+      "unit": "GB/s",
+      "median_ms": 9.664665222167969,
+      "samples_ms": [
+        9.664665222167969,
+        9.664961242675782,
+        9.663795471191406,
+        9.669166564941406,
+        9.664656066894532,
+        9.665128326416015,
+        9.663774108886718
+      ],
+      "allocation_mib": 512,
+      "bytes_counted": 536870912,
+      "direction": "pinned host to device"
+    },
+    "device_to_host": {
+      "value": 54.87520691852005,
+      "unit": "GB/s",
+      "median_ms": 9.783487701416016,
+      "samples_ms": [
+        9.783257293701173,
+        9.80215072631836,
+        9.806752014160157,
+        9.755622100830077,
+        9.783487701416016,
+        9.776769256591797,
+        9.786078643798827
+      ],
+      "allocation_mib": 512,
+      "bytes_counted": 536870912,
+      "direction": "device to pinned host"
+    },
+    "gemm_fp16": {
+      "value": 701.8092538887457,
+      "unit": "TFLOP/s",
+      "median_ms": 1.5666815757751464,
+      "samples_ms": [
+        1.432896041870117,
+        1.6218879699707032,
+        1.5666815757751464,
+        1.5458656311035157,
+        1.5634495735168457,
+        1.5811615943908692,
+        1.5799839973449707
+      ],
+      "shape": [
+        8192,
+        8192,
+        8192
+      ],
+      "flops": 1099511627776,
+      "input_dtype": "float16",
+      "allow_tf32": true
+    },
+    "gemm_bf16": {
+      "value": 711.4657108846156,
+      "unit": "TFLOP/s",
+      "median_ms": 1.545417594909668,
+      "samples_ms": [
+        1.364635181427002,
+        1.4902895927429198,
+        1.6054447174072266,
+        1.6133792877197266,
+        1.5553104400634765,
+        1.5453375816345214,
+        1.545417594909668
+      ],
+      "shape": [
+        8192,
+        8192,
+        8192
+      ],
+      "flops": 1099511627776,
+      "input_dtype": "bfloat16",
+      "allow_tf32": true
+    },
+    "gemm_tf32": {
+      "value": 374.5281629617192,
+      "unit": "TFLOP/s",
+      "median_ms": 2.9357248306274415,
+      "samples_ms": [
+        2.9585088729858398,
+        3.112808036804199,
+        2.927862358093262,
+        2.934614372253418,
+        2.8974000930786135,
+        2.9357248306274415,
+        2.9582191467285157
+      ],
+      "shape": [
+        8192,
+        8192,
+        8192
+      ],
+      "flops": 1099511627776,
+      "input_dtype": "float32",
+      "allow_tf32": true
+    },
+    "gemm_fp32": {
+      "value": 51.77213324543508,
+      "unit": "TFLOP/s",
+      "median_ms": 21.237518310546875,
+      "samples_ms": [
+        21.400108337402344,
+        21.156002807617188,
+        21.237518310546875,
+        21.423736572265625,
+        21.097535705566408,
+        21.320127868652342,
+        21.206863403320312
+      ],
+      "shape": [
+        8192,
+        8192,
+        8192
+      ],
+      "flops": 1099511627776,
+      "input_dtype": "float32",
+      "allow_tf32": false
+    }
+  }
+}
