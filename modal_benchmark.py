@@ -1,7 +1,8 @@
-"""Run the GPU Napkin Math benchmark on a pinned Modal H100 SXM.
+"""Run the GPU Napkin Math benchmark on a pinned Modal GPU.
 
 Usage:
     modal run modal_benchmark.py
+    modal run modal_benchmark.py --gpu a100
     modal run modal_benchmark.py --quick
     modal run modal_benchmark.py --output results/my-run.json
 """
@@ -17,7 +18,8 @@ import modal
 
 TORCH_VERSION = "2.8.0"
 NUMPY_VERSION = "2.2.6"
-GPU = "H100!"  # Modal's ! suffix prevents an automatic H200 upgrade.
+H100_GPU = "H100!"  # The ! suffix prevents an automatic H200 upgrade.
+A100_GPU = "A100-80GB"
 
 image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
     f"torch=={TORCH_VERSION}",
@@ -26,8 +28,7 @@ image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
 app = modal.App("gpu-napkin-math", image=image)
 
 
-@app.function(gpu=GPU, timeout=20 * 60, scaledown_window=60)
-def benchmark(quick: bool = False) -> dict[str, Any]:
+def _benchmark(*, gpu_request: str, quick: bool = False) -> dict[str, Any]:
     import platform
     import statistics
     import subprocess
@@ -61,7 +62,9 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
             samples.append(start.elapsed_time(end) / iterations)
         return samples
 
-    def metric(samples_ms: list[float], *, value: float, unit: str, **details: Any) -> dict[str, Any]:
+    def metric(
+        samples_ms: list[float], *, value: float, unit: str, **details: Any
+    ) -> dict[str, Any]:
         return {
             "value": value,
             "unit": unit,
@@ -74,7 +77,7 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
     metrics: dict[str, dict[str, Any]] = {}
     checks: dict[str, bool] = {}
 
-    # A one-element in-place add is useful as an end-to-end tiny-kernel number.
+    # One-element in-place add: end-to-end tiny-kernel latency.
     tiny = torch.ones(1, device=device)
     tiny_samples = cuda_samples(
         lambda: tiny.add_(1), warmups=20, iterations=100 if quick else 1000, rounds=rounds
@@ -86,9 +89,9 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
         unit="us",
         operation="torch.Tensor.add_ on one fp32 element",
     )
-    checks["tiny_kernel_finite"] = bool(torch.isfinite(tiny).all().item())
+    checks["tiny_kernel_finite"] = torch.isfinite(tiny).all().item()
 
-    # Device-to-device copy counts both the read and the write as HBM traffic.
+    # HBM copy counts both the read and the write.
     copy_mib = 128 if quick else 512
     copy_elements = copy_mib * 1024 * 1024 // 4
     copy_src = torch.arange(copy_elements, dtype=torch.float32, device=device)
@@ -108,9 +111,9 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
         convention="source read plus destination write",
     )
     check_idx = torch.tensor([0, copy_elements // 2, copy_elements - 1], device=device)
-    checks["hbm_copy"] = bool(torch.equal(copy_src[check_idx], copy_dst[check_idx]))
+    checks["hbm_copy"] = torch.equal(copy_src[check_idx], copy_dst[check_idx])
 
-    # y = a + b moves 12 bytes/element: two fp32 reads and one fp32 write.
+    # Elementwise add: 12 bytes/element (2 fp32 reads + 1 write).
     add_mib = 64 if quick else 256
     add_elements = add_mib * 1024 * 1024 // 4
     add_a = torch.randn(add_elements, dtype=torch.float32, device=device)
@@ -138,7 +141,7 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
         torch.allclose(add_out[add_check_idx], add_a[add_check_idx] + add_b[add_check_idx])
     )
 
-    # Pinned host buffers plus non-blocking copies expose the GPU link rather than pageable staging.
+    # Pinned host + non-blocking copies measure link bandwidth, not pageable staging.
     transfer_mib = 64 if quick else 512
     transfer_elements = transfer_mib * 1024 * 1024 // 4
     host_src = torch.arange(transfer_elements, dtype=torch.float32, pin_memory=True)
@@ -173,11 +176,11 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
             direction=direction,
         )
     transfer_indices = torch.tensor([0, transfer_elements // 2, transfer_elements - 1])
-    checks["host_device_round_trip"] = bool(
-        torch.equal(host_src[transfer_indices], host_dst[transfer_indices])
+    checks["host_device_round_trip"] = torch.equal(
+        host_src[transfer_indices], host_dst[transfer_indices]
     )
 
-    # GEMMs use C = A @ B and count 2*M*N*K floating-point operations.
+    # GEMM: C = A @ B, 2*M*N*K FLOPs.
     gemm_n = 4096 if quick else 8192
     gemm_specs = (
         ("fp16", torch.float16, True),
@@ -185,6 +188,12 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
         ("tf32", torch.float32, True),
         ("fp32", torch.float32, False),
     )
+    gemm_tolerance = {
+        "fp16": (0.03, 0.25),
+        "bf16": (0.08, 1.0),
+        "tf32": (0.01, 0.08),
+        "fp32": (0.0001, 0.001),
+    }
     for label, dtype, allow_tf32 in gemm_specs:
         torch.backends.cuda.matmul.allow_tf32 = allow_tf32
         a = torch.randn((gemm_n, gemm_n), dtype=dtype, device=device)
@@ -209,25 +218,23 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
             allow_tf32=allow_tf32,
         )
 
-        # Independent CPU float64 reference on a smaller seeded problem.
+        # CPU float64 reference on a smaller seeded problem.
         check_n = 256
         generator = torch.Generator().manual_seed(20260808)
         check_a_cpu = torch.randn((check_n, check_n), generator=generator, dtype=torch.float32)
         check_b_cpu = torch.randn((check_n, check_n), generator=generator, dtype=torch.float32)
         reference = check_a_cpu.double().numpy() @ check_b_cpu.double().numpy()
         check_actual = (
-            check_a_cpu.to(device=device, dtype=dtype)
-            @ check_b_cpu.to(device=device, dtype=dtype)
-        ).float().cpu().numpy()
-        tolerance = {
-            "fp16": (0.03, 0.25),
-            "bf16": (0.08, 1.0),
-            "tf32": (0.01, 0.08),
-            "fp32": (0.0001, 0.001),
-        }[label]
-        checks[f"gemm_{label}"] = bool(
-            np.allclose(check_actual, reference, rtol=tolerance[0], atol=tolerance[1])
+            (
+                check_a_cpu.to(device=device, dtype=dtype)
+                @ check_b_cpu.to(device=device, dtype=dtype)
+            )
+            .float()
+            .cpu()
+            .numpy()
         )
+        rtol, atol = gemm_tolerance[label]
+        checks[f"gemm_{label}"] = bool(np.allclose(check_actual, reference, rtol=rtol, atol=atol))
     torch.backends.cuda.matmul.allow_tf32 = True
 
     query = subprocess.run(
@@ -273,7 +280,7 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
             "statistic": f"median of {rounds} rounds after per-operation warmup",
             "allocation_units": "MiB (2^20 bytes)",
             "throughput_units": "GB/s (10^9 bytes/s) and TFLOP/s (10^12 FLOP/s)",
-            "gpu_request": GPU,
+            "gpu_request": gpu_request,
             "seed": 20260808,
         },
         "checks": checks,
@@ -281,10 +288,29 @@ def benchmark(quick: bool = False) -> dict[str, Any]:
     }
 
 
+@app.function(gpu=H100_GPU, timeout=20 * 60, scaledown_window=60)
+def benchmark_h100(quick: bool = False) -> dict[str, Any]:
+    return _benchmark(gpu_request=H100_GPU, quick=quick)
+
+
+@app.function(gpu=A100_GPU, timeout=20 * 60, scaledown_window=60)
+def benchmark_a100(quick: bool = False) -> dict[str, Any]:
+    return _benchmark(gpu_request=A100_GPU, quick=quick)
+
+
 @app.local_entrypoint()
-def main(output: str = "results/h100-sxm.json", quick: bool = False) -> None:
-    result = benchmark.remote(quick=quick)
-    output_path = Path(output)
+def main(gpu: str = "h100", output: str = "", quick: bool = False) -> None:
+    if gpu == "h100":
+        remote_benchmark = benchmark_h100
+        default_output = "results/h100-sxm.json"
+    elif gpu == "a100":
+        remote_benchmark = benchmark_a100
+        default_output = "results/a100-80gb-pcie.json"
+    else:
+        raise ValueError("--gpu must be 'h100' or 'a100'")
+
+    result = remote_benchmark.remote(quick=quick)
+    output_path = Path(output or default_output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Wrote {output_path}")

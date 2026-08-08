@@ -62,12 +62,20 @@ def test_negative_work_is_rejected() -> None:
         estimate(PROFILE, flops=-1, device_bytes=0)
 
 
-def test_checked_in_profile_is_complete_if_present() -> None:
-    profile_path = Path("results/h100-sxm.json")
-    if not profile_path.exists():
-        pytest.skip("benchmark has not been run")
+@pytest.mark.parametrize(
+    ("profile_path", "gpu_request", "device_name"),
+    [
+        (Path("results/h100-sxm.json"), "H100!", "NVIDIA H100 80GB HBM3"),
+        (Path("results/a100-80gb-pcie.json"), "A100-80GB", "NVIDIA A100 80GB PCIe"),
+    ],
+)
+def test_checked_in_profile_is_complete(
+    profile_path: Path, gpu_request: str, device_name: str
+) -> None:
     profile = json.loads(profile_path.read_text())
     assert profile["mode"] == "full"
+    assert profile["methodology"]["gpu_request"] == gpu_request
+    assert profile["device"]["name"] == device_name
     assert all(profile["checks"].values())
     assert set(PROFILE["metrics"]).issubset(profile["metrics"])
     assert all(metric["value"] > 0 for metric in profile["metrics"].values())
@@ -77,5 +85,10 @@ def test_markdown_renderer_contains_every_metric() -> None:
     report = render(PROFILE)
     assert "Test GPU benchmark" in report
     assert "800 TFLOP/s" in report
+    assert "1K launches → 5 ms" in report
+    assert "1M launches → 5 s" in report
+    assert "1 GB → 20 ms" in report
+    assert "1 TB → 20 s" in report
+    assert "1 TFLOP → 1.25 ms" in report
+    assert "1 PFLOP → 1.25 s" in report
     assert "all benchmark checks passed" in report
-

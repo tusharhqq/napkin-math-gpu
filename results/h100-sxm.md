@@ -2,17 +2,17 @@
 
 Captured `2026-08-08T17:38:29.399349+00:00` using the `H100!` Modal request in `full` mode.
 
-| Operation | Measured | Median time |
-| --- | ---: | ---: |
-| Tiny elementwise kernel | 5.17 μs | 0.0052 ms |
-| Pinned host → device | 56 GB/s | 9.6647 ms |
-| Device → pinned host | 55 GB/s | 9.7835 ms |
-| HBM copy (read + write) | 3,004 GB/s | 0.3575 ms |
-| Elementwise fp32 add (2 reads + write) | 3,064 GB/s | 0.2628 ms |
-| fp16 matrix multiply | 702 TFLOP/s | 1.5667 ms |
-| bf16 matrix multiply | 711 TFLOP/s | 1.5454 ms |
-| tf32 matrix multiply | 375 TFLOP/s | 2.9357 ms |
-| fp32 matrix multiply (TF32 disabled) | 52 TFLOP/s | 21.2375 ms |
+| Operation | Measured | Median benchmark time | Small job | Large job |
+| --- | ---: | ---: | ---: | ---: |
+| Tiny elementwise kernel | 5.17 μs | 0.0052 ms | 1K launches → 5.17 ms | 1M launches → 5.17 s |
+| Pinned host → device | 56 GB/s | 9.6647 ms | 1 GB → 18 ms | 1 TB → 18 s |
+| Device → pinned host | 55 GB/s | 9.7835 ms | 1 GB → 18.2 ms | 1 TB → 18.2 s |
+| HBM copy (read + write) | 3,004 GB/s | 0.3575 ms | 1 GB → 333 μs | 1 TB → 333 ms |
+| Elementwise fp32 add (2 reads + write) | 3,064 GB/s | 0.2628 ms | 1 GB → 326 μs | 1 TB → 326 ms |
+| fp16 matrix multiply | 702 TFLOP/s | 1.5667 ms | 1 TFLOP → 1.42 ms | 1 PFLOP → 1.42 s |
+| bf16 matrix multiply | 711 TFLOP/s | 1.5454 ms | 1 TFLOP → 1.41 ms | 1 PFLOP → 1.41 s |
+| tf32 matrix multiply | 375 TFLOP/s | 2.9357 ms | 1 TFLOP → 2.67 ms | 1 PFLOP → 2.67 s |
+| fp32 matrix multiply (TF32 disabled) | 52 TFLOP/s | 21.2375 ms | 1 TFLOP → 19.3 ms | 1 PFLOP → 19.3 s |
 
 ## Environment
 

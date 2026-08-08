@@ -33,6 +33,38 @@ def _value(metric: dict[str, Any]) -> str:
     return f"{value:g} {unit}"
 
 
+def _duration(seconds: float) -> str:
+    if seconds < 1e-6:
+        return f"{seconds * 1e9:.3g} ns"
+    if seconds < 1e-3:
+        return f"{seconds * 1e6:.3g} μs"
+    if seconds < 1:
+        return f"{seconds * 1e3:.3g} ms"
+    return f"{seconds:.3g} s"
+
+
+def _work_examples(metric: dict[str, Any]) -> tuple[str, str]:
+    value = metric["value"]
+    unit = metric["unit"]
+    if unit == "us":
+        seconds_per_launch = value / 1e6
+        return (
+            f"1K launches → {_duration(1_000 * seconds_per_launch)}",
+            f"1M launches → {_duration(1_000_000 * seconds_per_launch)}",
+        )
+    if unit == "GB/s":
+        return (
+            f"1 GB → {_duration(1 / value)}",
+            f"1 TB → {_duration(1_000 / value)}",
+        )
+    if unit == "TFLOP/s":
+        return (
+            f"1 TFLOP → {_duration(1 / value)}",
+            f"1 PFLOP → {_duration(1_000 / value)}",
+        )
+    return ("—", "—")
+
+
 def render(profile: dict[str, Any]) -> str:
     lines = [
         f"# {profile['device']['name']} benchmark",
@@ -40,12 +72,16 @@ def render(profile: dict[str, Any]) -> str:
         f"Captured `{profile['captured_at']}` using the `{profile['methodology']['gpu_request']}` "
         f"Modal request in `{profile['mode']}` mode.",
         "",
-        "| Operation | Measured | Median time |",
-        "| --- | ---: | ---: |",
+        "| Operation | Measured | Median benchmark time | Small job | Large job |",
+        "| --- | ---: | ---: | ---: | ---: |",
     ]
     for label, key in ROWS:
         metric = profile["metrics"][key]
-        lines.append(f"| {label} | {_value(metric)} | {metric['median_ms']:.4f} ms |")
+        small_job, large_job = _work_examples(metric)
+        lines.append(
+            f"| {label} | {_value(metric)} | {metric['median_ms']:.4f} ms | "
+            f"{small_job} | {large_job} |"
+        )
     lines.extend(
         [
             "",
@@ -78,4 +114,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
